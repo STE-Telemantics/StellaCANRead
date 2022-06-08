@@ -1,33 +1,3 @@
-# Checklist REMOVE AFTER CHECKING 
-
-Go through this checklist after creating your repository. It should only take a couple of minutes. If you encounter any issues, let someone from IT know.
-
-### README
-- [ ] Manually go through and edit the rest of the README.
-
-### Dotfiles
-- [ ] Add a `.gitignore` file.
-
-### GitHub Settings
-- [ ] Add a short description to the repository.
-- [ ] Add a development branch.
-- [ ] Set develop branch as default branch.
-- [ ] Enable all data services (read-only analysis, dependency graph, security alerts).
-- [ ] Create branch protection rules for master:
-  - [ ] Require pull request review before merging.
-    - [ ] Require 2 reviews. (One for the code and testing (DevOps), and one for semantics)
-    - [ ] Dismiss stale pull request approvals when new commits are pushed.
-  - [ ] Require status checks before merging.
-- [ ] Create branch protection rules for develop:
-  - [ ] Require pull request review before merging.
-    - [ ] Require 2 reviews. (One for the code and testing (DevOps), and one for semantics)
-    - [ ] Dismiss stale pull request approvals when new commits are pushed.
-  - [ ] Require status checks before merging.
-- [ ] Add a .travis.yml file.
-  - [ ] Add the codecov token to env variables.
-- [ ] [OPTIONAL] Add a codecov.yml
-- [ ] Enable the status checks for travis and codecov.
-
 # Project Title
 
 One Paragraph of project description goes here
