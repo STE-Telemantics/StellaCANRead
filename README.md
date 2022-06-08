@@ -10,7 +10,7 @@ Go through this checklist after creating your repository. It should only take a 
 
 ### GitHub Settings
 - [ ] Add a short description to the repository.
-- [ ] Add a develop branch.
+- [ ] Add a development branch.
 - [ ] Set develop branch as default branch.
 - [ ] Enable all data services (read-only analysis, dependency graph, security alerts).
 - [ ] Create branch protection rules for master:
