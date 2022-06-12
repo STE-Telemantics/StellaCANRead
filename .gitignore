@@ -1,6 +1,12 @@
 # Prerequisites
 *.d
 
+#ignore vscode folder
+.vscode/
+
+# Unknown Nuttx file that doesn't do anything
+.depend
+
 # Compiled Object files
 *.slo
 *.lo
