@@ -1,67 +1,40 @@
 # Project Title
 
-One Paragraph of project description goes here
+Stella CAN Read software for Linux
 
 ## Getting Started
 
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
+First ensure you clone/download this repo on a Linux machine that has g++ installed.
 
 ### Prerequisites
 
-What things you need to install the software and how to install them
+g++ with C++17 and lpthread
 
-```
-Give examples
-```
+canplayer tool
 
 ### Installing
 
-A step by step series of examples that tell you how to get a development env running
+Go into the user_src folder, open a terminal and run:
 
-Say what the step will be
+`g++ -std=c++17 -Wall -W user_src_main.cxx socket_reader.cxx tcp_client.cxx data_handler.cxx sd_controller.cxx ft_client.cxx -o stella -lpthread`
 
-```
-Give the example
-```
-
-And repeat
+Then open a new terminal and run 
 
 ```
-until finished
+$ sudo ip link add vcan0 type vcan
+$ sudo ip link set up vcan0
+
+$ canplayer -I logfile.scl vcan0=canx
 ```
 
-End with an example of getting some data out of the system or using it for a little demo
+With logfile.scl being a logfile of your choice
 
-## Running the tests
+Then go back to the initial terminal and run:
 
-Explain how to run the automated tests for this system.
+`./stella`
 
-### Break down into end to end tests
+### Modifying the build
 
-Explain what these tests test and why.
+Configuration options are available in the `stellaCANRead.h` file, with each having a short description on how it works
 
-```
-Give an example
-```
 
-### And coding style tests
-
-Explain what these tests test and why.
-
-```
-Give an example
-```
-
-## Deployment
-
-Add additional notes about how to deploy this on a live system
-
-## Authors
-
-* **YOUR NAME HERE** - *Initial work*
-
-See also the list of [contributors](https://github.com/marketredesign/your_project/contributors) who participated in this project.
-
-## License
-
-This project is licensed under the MRD License - see the [LICENSE](LICENSE) file for details

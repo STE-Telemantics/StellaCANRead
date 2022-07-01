@@ -3,16 +3,19 @@
 #include <iostream>
 #include <mutex>
 #include <condition_variable>
-
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <net/if.h>
-
-#include <netpacket/can.h>
-#include <nuttx/can.h>
+#include <memory.h>
+#include <poll.h>
+#include <linux/can.h>
 #include <queue>
+#include <arpa/inet.h>
 
 #define PRINT_HEADER "[SocketCANReader] "
+
+using namespace std::chrono_literals;
 
 // Access the variable that determines whether the thread needs to terminate
 extern bool terminate;
@@ -34,7 +37,8 @@ static int init_socket();
 void socket_can_reader()
 {
     // Initialize the socket connection
-    if(init_socket() < 0){
+    if (init_socket() < 0)
+    {
         // If the connection could not be established, error and stop the thread
         std::cout << PRINT_HEADER "Could not initialize the socket connection!" << std::endl;
         return;
@@ -43,16 +47,43 @@ void socket_can_reader()
     int nbytes;
     can_frame frame;
 
-    std::unique_lock<std::mutex> m_lock;
+    // Set up a pollfd struct that allows us to poll the status of the socket prior to reading data
+    // and ensure we only read if there is data to read
+    struct pollfd pfd;
+    memset(&pfd, '\0', sizeof(struct pollfd)); // Clear it of garbage
+    int nfds = 1;                              // # of fd's handled by our poll
+    pfd.fd = socket_id;                        // Set the fd to be polled equal to our socket fd
+    pfd.events = POLLIN;                       // Set the event to poll for equal to POLLIN
+
+    // Create the lock, but don't lock immediately
+    std::unique_lock<std::mutex> m_lock(MUTEX_CAN_FRAME_BUFFER, std::defer_lock);
     // We keep running until we receive a request to terminate the program
     while (!terminate)
     {
-        // Read data from the socket and store it in frame
-        nbytes = read(socket_id, &frame, sizeof(struct can_frame));
+        int ready = poll(&pfd, nfds, 1000);
 
-        if(nbytes < 0){
-            perror(PRINT_HEADER "read failed!");
-            return;
+        if (ready < 0)
+        {
+            // An error occured
+            perror(PRINT_HEADER "Could not poll the CAN bus!");
+            continue;
+        }
+        else if (ready == 0)
+        {
+            // The poll timed out, recheck the condition of the while loop
+            continue;
+        }
+
+        // Verify that the POLLIN event happened for this fd
+        if (pfd.revents & POLLIN)
+        {
+            // If so, read data from the socket and store it in frame
+            nbytes = read(socket_id, &frame, sizeof(struct can_frame)); // Can block here if no data is received
+            if (nbytes < 0)
+            {
+                perror(PRINT_HEADER "read failed!");
+                return;
+            }
         }
 
         // The can_frame is received, now send it to the Data Handler
@@ -60,14 +91,17 @@ void socket_can_reader()
         // Lock the mutex
         m_lock.lock();
 
-        // wait until frame_buffer is not full
-        while(frame_buffer.size() >= QUEUE_SIZE){
-            CAN_FRAME_BUFFER_FULL.wait(m_lock);
+        // wait until frame_buffer is not full OR we are terminating
+        while (frame_buffer.size() >= QUEUE_SIZE && !terminate)
+        {
+#if DEBUG_COND
+            std::cout << PRINT_HEADER "Waiting for the CAN buffer to be non-full" << std::endl;
+#endif
+            CAN_FRAME_BUFFER_FULL.wait_for(m_lock, COND_TIMEOUT); // Recheck condition every CONT_TIMEOUT to avoid deadlock
         }
 
         // It is no longer full OR we are terminating, so add (a copy of) the frame to the queue
         frame_buffer.push(frame);
-        printf("CAN message received: {id: %03lx, data: %x%x%x%x%x%x%x%x}", frame.can_id, frame.data[0], frame.data[1], frame.data[2], frame.data[3], frame.data[4], frame.data[5], frame.data[6], frame.data[7]);
         // Signal waiters (Data Handler) that the frame_buffer queue is no longer empty
         CAN_FRAME_BUFFER_EMPTY.notify_one();
         // Unlock the mutex
@@ -76,19 +110,22 @@ void socket_can_reader()
     }
 
     // We have received a request to terminate, hence cleanup any open sockets
-    if(close(socket_id) < 0){
+    if (close(socket_id) < 0)
+    {
         perror(PRINT_HEADER "CAN socket could not be closed!");
     }
 
-    printf(PRINT_HEADER "Terminated SocketCANReader successfully!");
+    std::cout << PRINT_HEADER "Terminated SocketCANReader successfully!" << std::endl;
 }
 
 // Initialize a socket connection to the CAN interface/driver
 // Implementation according to https://www.beyondlogic.org/example-c-socketcan-code/
 // Returns 0 if initialization was successful, -1 otherwise
-static int init_socket(){
+static int init_socket()
+{
     // Create a socket object for the CAN interface and gain its id
-    if((socket_id = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0){
+    if ((socket_id = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0)
+    {
         perror(PRINT_HEADER "CAN socket could not be opened!");
         return -1;
     }
@@ -96,32 +133,28 @@ static int init_socket(){
     // Create an interface request object;
     struct ifreq ifr;
 
+    memset(&ifr, 0, sizeof(ifreq)); // Remove all `garbage' from the struct
+
     // Get the interface index associated with can1
-    strncpy(ifr.ifr_name, "can1", 4);
-    ifr.ifr_name[4] = '\0'; // Add terminator
-    if(ioctl(socket_id, SIOCGIFINDEX, &ifr) < 0){
+    strncpy(ifr.ifr_name, "vcan0", 5);
+    ifr.ifr_name[5] = '\0'; // Add terminator
+    if (ioctl(socket_id, SIOCGIFINDEX, &ifr) < 0)
+    {
         perror(PRINT_HEADER "Could not find the if-index associated with can!");
         return -1;
     }
 
-    // Update the flags to indicate the interface should be started
-    ifr.ifr_ifru.ifru_flags |= IFF_UP;
-
-    // Enable the interface
-    if(ioctl(socket_id, SIOCSIFFLAGS, &ifr) < 0){
-        perror(PRINT_HEADER "Enabling interface failed!");
-        return -1;
-    }
-
-    // Create a socket address that connects to the can1 interface
+    // Create a socket address that connects to the can interface
     struct sockaddr_can socket_addr;
+
+    memset(&socket_addr, 0, sizeof(sockaddr_can)); // Empty the struct of garbage
 
     socket_addr.can_family = AF_CAN;
     socket_addr.can_ifindex = ifr.ifr_ifindex;
 
-
     // Bind a socket address to the socket
-    if(bind(socket_id, (struct sockaddr *)&socket_addr, sizeof(socket_addr)) < 0){
+    if (bind(socket_id, (struct sockaddr *)&socket_addr, sizeof(socket_addr)) < 0)
+    {
         perror(PRINT_HEADER "binding of the CAN socket failed!");
         return -1;
     }
