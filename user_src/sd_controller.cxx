@@ -13,6 +13,7 @@
 
 using namespace std::chrono;
 
+// Access the variable that determines whether the thread needs to terminate
 extern bool terminate;
 
 // TCP CLIENT
@@ -40,7 +41,7 @@ static std::fstream msg_file;
 // A counter that keeps track of how many messages have been written into the current file
 static uint32_t msg_counter;
 
-// Method declarations
+// Function declarations
 static int create_file();
 static int switch_file();
 static void write_message();
@@ -84,7 +85,7 @@ void sd_controller()
         write_message();
     }
 
-    // Close the current file 
+    // Close the current file
     msg_file.close();
 
     // Mark the current file as released to the FT Client
@@ -103,7 +104,7 @@ void sd_controller()
 // Creates a new file and opens it
 static int create_file()
 {
-    // Open a new unique file based on the current time -> Max 32 Bytes namelength (inc .txt)
+    // Open a new unique file based on the current time -> Max 32 Bytes namelength (inc .txt extension)
     uint64_t timestamp = duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 
     // Enter critical section
@@ -114,6 +115,8 @@ static int create_file()
     char path[32];
     sprintf(path, MOUNT_PATH "/msgs_%llu.txt", timestamp);
     cur_file = path;
+
+    // Create and open the file
     msg_file.open(cur_file, std::ios::out);
 
     // Notify the ft client that cur_file has changed and hence potentially a new file can be sent to the server
@@ -136,15 +139,9 @@ static int create_file()
 // Switches the current file to a new file
 static int switch_file()
 {
-    // What it will do:
     // Close current file
+    msg_file.flush();
     msg_file.close();
-
-    // Ensure the file was properly closed
-    if (msg_file.fail())
-    {
-        return -1;
-    }
 
     // Create and open a new file
     return create_file();
@@ -162,7 +159,6 @@ static void write_message()
     // Ensure there is a message to write in the queue
     while (message_buffer.empty())
     {
-        // Avoid deadlock if no messages are being written to the SD Controller but terminate is true
         if (terminate)
         {
             // Unlock the mutex
@@ -174,6 +170,7 @@ static void write_message()
 #if DEBUG_COND
         std::cout << PRINT_HEADER "Waiting for message buffer to be non-empty!" << std::endl;
 #endif
+        // Avoid deadlock if no messages are being written to the SD Controller but terminate is true
         MESSAGE_BUFFER_EMPTY.wait_for(msg_lock, COND_TIMEOUT); // Recheck every CONT_TIMEOUT ms to avoid deadlock
     }
 
@@ -192,6 +189,9 @@ static void write_message()
         perror("Could not write to file!");
         return;
     }
+
+    // Flush the file, could be omitted to improve efficiency
+    msg_file.flush();
 
     // Increase the message counter by 1 as a message has been written to the file
     msg_counter++;

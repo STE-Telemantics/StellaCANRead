@@ -13,6 +13,7 @@
 
 #define PRINT_HEADER "[FT_Client] "
 
+// Access the variable that determines whether the thread needs to terminate
 extern bool terminate;
 
 // TCP Client
@@ -71,24 +72,22 @@ void ft_client()
         // First select a message from the file to be selected:
         if (!std::getline(msg_file, msg))
         {
+            // If no message could be selected we reached EOF, open another file
             open_result = open_next();
             continue; // Verify a file was opened
         }
 
         // Add a \n to the message
-
         msg.append("\n");
 
-        // Otherwise, a message was received now send it
+        // A message was received now send it
         send_result = send_msg(); // Only < 0 if conn == false and terminate == true
     }
 
     // If we terminate and msg_file is still open (== we were reading it and no conn and terminate)
     if (msg_file.is_open())
     {
-        std::cout << "HELLOOOO???" << std::endl;
         // Save a reference to the file we are currently reading
-        
         // Open the ptr_file as write
         ptr_file.open(MOUNT_PATH "/last.txt", std::ios::out);
 
@@ -109,8 +108,10 @@ void ft_client()
 
         // Close the ptr file
         ptr_file.close();
-    }else{
-        // Otherwise clear the file
+    }
+    else
+    {
+        // Otherwise clear the file to prevent FT Client to attempt to read from non-existent file on the next run
         ptr_file.open(MOUNT_PATH "/last.txt", std::ios::out | std::ios::trunc);
         ptr_file << "\0";
         ptr_file.close();
@@ -119,9 +120,10 @@ void ft_client()
     std::cout << PRINT_HEADER "FT CLient terminated succesfully" << std::endl;
 }
 
+// Tries to continue to read from the file we were reading last run, if any
 static void open_prev()
 {
-    // Open the file in which
+    // Open the file in which the file name and read pointer are stored
     ptr_file.open(MOUNT_PATH "/last.txt", std::ios::in);
 
     std::string path;
@@ -158,7 +160,7 @@ static void open_prev()
     // Now open the last opened file for reading and continue at offset
     msg_file.open(path, std::ios::in);
     msg_file.seekg(offset, std::ios::beg);
-    ptr_file.close(); 
+    ptr_file.close();
 }
 
 static int open_next()
@@ -213,9 +215,11 @@ static int open_next()
                 msg_file_path.append(filenameStr);
 
                 msg_file.open(msg_file_path);
+
 #if DEBUG_COND
                 std::cout << PRINT_HEADER << "Started reading from the next file: " << msg_file_path << std::endl;
 #endif
+
                 // Unlock the mutex
                 cur_lock.unlock();
                 // Exit critical section
@@ -226,12 +230,14 @@ static int open_next()
 #if DEBUG_COND
         std::cout << "Waiting for next file..." << std::endl;
 #endif
+
         // Otherwise no such file could be found, wait until there is a new file completed by the SD Controller
         // Or we timeout to prevent deadlock if terminate is true
         FILE_TO_SEND.wait(cur_lock);
     }
 }
 
+// Send a message to the server using the FT TCP client
 static int send_msg()
 {
     // Enter the critical section
@@ -263,20 +269,19 @@ static int send_msg()
     // Check if data can be written to the TCP Client fd, timeout = 10ms
     int ready = poll(&pfd, nfds, 10);
 
-    // Check the result of the poll to determine whether we are connected or not
+    // Check if poll failed or timed out
     if (ready <= 0)
     {
         if (ready < 0)
         {
             // An error occured on poll, safe to assume we are no longer connected
             perror(PRINT_HEADER "Could not poll the TCP Client!");
+
+            // Notify the main thread that we are no longer connected
+            ft_tcp_client.connected = false;
+            TCP_CLIENT_DISCONNECTED.notify_one();
         }
 
-        // Otherwise, it timedout, safe to assume we are no longer connected
-        ft_tcp_client.connected = false;
-
-        // Signal user_src_main that the client has disconnected
-        TCP_CLIENT_DISCONNECTED.notify_one();
         // Unlock the mutex
         client_lock.unlock();
         // Exit critical section
@@ -291,31 +296,42 @@ static int send_msg()
     // Now send the message to the server
     int totbytes = 0; // # of bytes sent sofar
 
-    // Ensure the entire message is sent
-    while (totbytes < msg.length())
+    // Check the result of the poll to determine whether we can safely write to the TCP socket
+    if (pfd.revents & POLLOUT)
     {
-        int nbytes = send(ft_tcp_client.sockfd, (msg.c_str() + totbytes), msg.length() - totbytes, 0);
-
-        // Check if an error occured
-        if (nbytes < 0)
+        // Ensure the entire message is sent
+        while (totbytes < msg.length())
         {
-            perror(PRINT_HEADER "Could not send data to the server!");
-            ft_tcp_client.connected = false; // Assume the connection dropped
+            int nbytes = send(ft_tcp_client.sockfd, (msg.c_str() + totbytes), msg.length() - totbytes, 0);
 
-            // Signal user_src_main that the client has disconnected
-            TCP_CLIENT_DISCONNECTED.notify_one();
-            // Unlock the mutex
-            client_lock.unlock();
-            // Exit critical section
+            // Check if an error occured
+            if (nbytes < 0)
+            {
+                perror(PRINT_HEADER "Could not send data to the server!");
+                ft_tcp_client.connected = false; // Assume the connection dropped
 
-            // We were unable to send this particular message
-            // So decrease the read pointer by one line
-            msg_file.seekg(prev);
-            return 0; // Indicate that send_msg was completed, but no data was sent
+                // Signal user_src_main that the client has disconnected
+                TCP_CLIENT_DISCONNECTED.notify_one();
+                // Unlock the mutex
+                client_lock.unlock();
+                // Exit critical section
+
+                // We were unable to send this particular message
+                // So decrease the read pointer by one line
+                msg_file.seekg(prev);
+                return 0; // Indicate that send_msg was completed, but no data was sent
+            }
+
+            // Otherwise, add nbytes to totbytes
+            totbytes += nbytes;
         }
-
-        // Otherwise, add nbytes to totbytes
-        totbytes += nbytes;
+    }
+    else
+    {
+        // Otherwise, we cannot send data to the TCP client without blocking
+        // So decrease the readpointer by one line and return
+        msg_file.seekg(prev);
+        return 0; // Indicate that send_msg was completed, but no data was sent
     }
 
     // The message was send succesfully

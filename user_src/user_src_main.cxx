@@ -53,7 +53,7 @@ int main(int argc, char *argv[])
     std::this_thread::sleep_for(10ms);
 
     // Start the FT Client module
-    std::cout << PRINT_HEADER << "Started the FT Client Module" <<std::endl;
+    std::cout << PRINT_HEADER << "Started the FT Client Module" << std::endl;
     std::thread ft_client_t(ft_client);
 
     // Create a mutex lock for the DH TCP client, do not yet lock
@@ -61,7 +61,10 @@ int main(int argc, char *argv[])
     // Create a mutex lock for the FT TCP client, do not yet lock
     std::unique_lock<std::mutex> ft_client_lock(MUTEX_FT_TCP_CLIENT, std::defer_lock);
 
+#if USE_TIMER
+    // Determine at which point the program should be terminated
     int64_t terminatetime = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() + PROG_DUR;
+#endif
 
     // Enter critical section
     // Lock the TCP client mutexes
@@ -108,6 +111,7 @@ int main(int argc, char *argv[])
         {
 
 #if USE_TIMER
+            // Keep track of the timer
             int64_t curtime = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
             if (curtime > terminatetime)
             {
@@ -123,7 +127,8 @@ int main(int argc, char *argv[])
             TCP_CLIENT_DISCONNECTED.wait_for(dh_client_lock, COND_TIMEOUT);
         }
 
-        if(terminate){
+        if (terminate)
+        {
             break;
         }
 
@@ -131,6 +136,7 @@ int main(int argc, char *argv[])
         ft_client_lock.lock();
 
 #if USE_TIMER
+        // Keep track of the timer here as well
         int64_t curtime = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
         if (curtime > terminatetime)
         {
@@ -153,9 +159,14 @@ int main(int argc, char *argv[])
             // If yes, set connected to true
             data_handler_client.connected = true;
             ft_tcp_client.connected = true;
+            std::cout << PRINT_HEADER "Reconnected with server" << std::endl;
+
+            // Notify the ft_client that there is a TCP connection again
+            TCP_CLIENT_CONNECTED.notify_one();
         }
         else
         {
+            // Otherwise, we could not connect to the server
             perror(PRINT_HEADER "Failed to open TCP connections");
         }
 
@@ -164,8 +175,8 @@ int main(int argc, char *argv[])
         dh_client_lock.unlock();
         // Exit critical section
 
-        // Now sleep for RECON_DELAY seconds before trying to reconnect again
-        sleep(RECON_DELAY);
+        // Now sleep for RECON_DELAY milliseconds before trying to reconnect again
+        std::this_thread::sleep_for(RECON_DELAY);
     }
 
     // Wait for the SocketCAN Reader module to terminate

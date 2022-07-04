@@ -19,9 +19,6 @@ using namespace std::chrono_literals;
 
 // Access the variable that determines whether the thread needs to terminate
 extern bool terminate;
-// Currently does not terminate if: blocked on read as there is no external signal that can wake it up outside of a can_frame becoming available
-// Other cases: a) thread blocked on QUEUE_FULL cond_variable -> data_handler will always empty queue before terminating -> unblocks -> go to b)
-//              b) thread not blocked -> while !terminate loop will catch terminate and terminate.
 
 // CAN FRAME BUFFER
 std::mutex MUTEX_CAN_FRAME_BUFFER;
@@ -32,6 +29,7 @@ std::queue<struct can_frame> frame_buffer;
 // Variables related to SocketCAN
 static int socket_id;
 
+// Declaration of static functions
 static int init_socket();
 
 void socket_can_reader()
@@ -48,7 +46,7 @@ void socket_can_reader()
     can_frame frame;
 
     // Set up a pollfd struct that allows us to poll the status of the socket prior to reading data
-    // and ensure we only read if there is data to read
+    // and ensure we only try to read if there is data to read
     struct pollfd pfd;
     memset(&pfd, '\0', sizeof(struct pollfd)); // Clear it of garbage
     int nfds = 1;                              // # of fd's handled by our poll
@@ -57,10 +55,11 @@ void socket_can_reader()
 
     // Create the lock, but don't lock immediately
     std::unique_lock<std::mutex> m_lock(MUTEX_CAN_FRAME_BUFFER, std::defer_lock);
+
     // We keep running until we receive a request to terminate the program
     while (!terminate)
     {
-        int ready = poll(&pfd, nfds, 1000);
+        int ready = poll(&pfd, nfds, 10);
 
         if (ready < 0)
         {
@@ -74,16 +73,27 @@ void socket_can_reader()
             continue;
         }
 
+        ssize_t totbytes = 0;
         // Verify that the POLLIN event happened for this fd
         if (pfd.revents & POLLIN)
         {
-            // If so, read data from the socket and store it in frame
-            nbytes = read(socket_id, &frame, sizeof(struct can_frame)); // Can block here if no data is received
-            if (nbytes < 0)
+            // Read until the entire can_frame was filled
+            while (totbytes < sizeof(struct can_frame))
             {
-                perror(PRINT_HEADER "read failed!");
-                return;
+                // If so, read data from the socket and store it in frame
+                nbytes = read(socket_id, &frame + totbytes, sizeof(struct can_frame) - totbytes); // Can block here if no data is received
+                if (nbytes < 0)
+                {
+                    perror(PRINT_HEADER "read failed!");
+                    return;
+                }
+                totbytes += nbytes;
             }
+        }
+        else
+        {
+            // Otherwise, no data was read from the CAN bus, so no data has to be added to the buffer
+            continue;
         }
 
         // The can_frame is received, now send it to the Data Handler
@@ -135,9 +145,8 @@ static int init_socket()
 
     memset(&ifr, 0, sizeof(ifreq)); // Remove all `garbage' from the struct
 
-    // Get the interface index associated with can1
-    strncpy(ifr.ifr_name, "vcan0", 5);
-    ifr.ifr_name[5] = '\0'; // Add terminator
+    // Get the interface index associated with CAN_IF
+    strncpy(ifr.ifr_name, CAN_IF, sizeof(CAN_IF));
     if (ioctl(socket_id, SIOCGIFINDEX, &ifr) < 0)
     {
         perror(PRINT_HEADER "Could not find the if-index associated with can!");
